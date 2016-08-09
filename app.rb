@@ -79,7 +79,7 @@ post '/' do
   end
 
   new_versions = versions - get_versions.lines
-  unless new_versions.find { |l| l == "#{gem_name} #{version}" }
+  unless new_versions.find { |l| l.start_with?("#{gem_name} #{version}") }
     halt 404, 'gem not added to versions file'
   end
 
