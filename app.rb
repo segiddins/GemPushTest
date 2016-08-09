@@ -19,13 +19,14 @@ rescue
   raise "Failed to load JSON from #{host}/#{path}:\n#{json}"
 end
 
-def push!(name, version)
+def push!(name, version, platform)
   spec = Gem::Specification.new do |s|
     s.name = name
     s.version = version
     s.authors = ['example@example.com']
     s.files = [__FILE__]
     s.summary = 'test'
+    s.platform = platform
     s.required_ruby_version = '~> 2.0'
     s.required_rubygems_version = '~> 2.6'
     s.add_dependency 'foo', '~> 1.0'
@@ -53,42 +54,51 @@ post '/' do
 
   version = params.fetch('version') { Time.now.strftime('%Y.%m.%d.%H.%M.%S') }
   gem_name = ENV.fetch('GEM_NAME')
+  platform = params.fetch('platform') { 'ruby' }
+  platform_string = platform == 'ruby' ? '' : "-#{platform}"
 
   dependency_endpoint = get_dependency_api(gem_name)
   versions = get_versions.lines
   info = get_info(gem_name).lines
 
-  if dependency_endpoint.find { |g| g['version'] == version }
-    halt 422, "#{gem_name}-#{version} already was pushed"
+  if dependency_endpoint.find { |g| g['version'] == version && g['platform'] == platform }
+    halt 422, "#{gem_name}-#{version}-#{platform} already was pushed"
   end
 
   begin
-    push!(gem_name, version)
+    push!(gem_name, version, platform)
   rescue Gem::SystemExitException
     halt 500, "Failed to push: #{$ERROR_INFO}"
   end
 
+  errors = []
+
   new_gem = get_dependency_api(gem_name) - dependency_endpoint
   case new_gem.size
-  when 0 then halt 404, 'gem not added to dependency API'
+  when 0 then errors << 'gem not added to dependency API'
   when 1
-    unless new_gem.first.values_at('name', 'number', 'platform', 'dependencies') == [gem_name, version, 'ruby', [['foo', '~> 1.0']]]
-      halt 404, "wrong gem added: #{new_gem}"
+    unless new_gem.first.values_at('name', 'number', 'platform', 'dependencies') == [gem_name, version, platform, [['foo', '~> 1.0']]]
+      errors << "wrong gem added: #{new_gem}"
     end
-  else halt 404, "too many new gems added: #{new_gem}"
+  else errors << "too many new gems added: #{new_gem}"
   end
 
-  new_versions = versions - get_versions.lines
-  unless new_versions.find { |l| l.start_with?("#{gem_name} #{version}") }
-    halt 404, 'gem not added to versions file'
+  new_versions = get_versions.lines - versions
+  unless new_versions.find { |l| l.start_with?("#{gem_name} #{version}#{platform_string}") }
+    errors << "gem not added to versions file, new versions: #{new_versions}"
   end
 
   new_info = get_info(gem_name).lines - info
   case new_info.size
-  when 0 then halt 404, 'gem not added to dependency API'
-  when 1 then halt 404, "wrong gem added: #{new_info}" unless new_info =~ /^#{version} /
-  else halt 404, "too many new gems added: #{new_info}"
+  when 0 then errors << 'gem not added to info'
+  when 1 then errors << "wrong gem added: #{new_info}" unless new_info.first =~ /^#{version}#{platform_string} /
+  else errors << "too many new gems added: #{new_info}"
   end
 
-  halt "successfully pushed #{gem_name}-#{version}"
+  if errors.empty?
+    halt "successfully pushed #{gem_name}-#{version}-#{platform}"
+  else
+    errors.unshift "failed to push #{gem_name}-#{version}-#{platform}"
+    halt 404, errors.join("\n")
+  end
 end
